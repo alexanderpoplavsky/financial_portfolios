@@ -65,7 +65,13 @@ class Reporting:
         self.portfolio.loc[cash_str, amount_net_str] = self.balance
     
     def __clean(self):
-#         self.portfolio[self.portfolio[amount_net_str] > 0.01]
+        self.portfolio = self.portfolio[self.portfolio[amount_net_str] > 0.01]
+        self.portfolio.loc[cash_str, maturity_str] = ""
+        self.portfolio.loc[cash_str, quantity_str] = 1
+        self.portfolio.loc[cash_str, price_str] = 1
+        self.portfolio.loc[cash_str, rate_str] = 1
+        self.portfolio.loc[cash_str, currency_str] = self.currency
+        self.portfolio.loc[cash_str, isin_str] = ""
         
     def deposit(self, date, amount):
         self.balance += amount
@@ -83,17 +89,17 @@ class Reporting:
         self.__update_cash()
         self.__normalise()
     
-    def buy(self, asset_info, amount, exchange_rate=1):
+    def buy(self, asset_info, quantity, exchange_rate=1):
+        amount_ = quantity * asset_info["price"]
+        amount = amount_ + asset_info["fee"] + amount_ * asset_info["commission"]
         if amount > self.balance:
             amount = self.balance
             self.balance = 0
         else:
             self.balance -= amount
-        amount_net = amount - asset_info["fee"] - amount * asset_info["commission"]
-        if amount_net < 0.01: return
+        if amount < 0.01: return
         record_data_str = buy_str + ": " + asset_info["title"] + " ISIN: " + asset_info["isin"]
         self.current_account.loc[len(self.current_account)] = [pd.to_datetime(asset_info["date"]), buy_str, amount, self.balance, record_data_str]
-        quantity = amount_net / asset_info["price"]
         buysell_enrty = {portfolio_str: self.portfolio_id,
                        bank_str: asset_info["bank"],
                        date_str: pd.to_datetime(asset_info["date"]),
@@ -110,33 +116,32 @@ class Reporting:
                        cost_str: amount}
         self.buysell.loc[len(self.buysell)] = buysell_enrty
         if asset_info["title"] not in self.portfolio.index:
-            self.portfolio.loc[asset_info["title"]] = [asset_info["isin"], asset_info["currency"], asset_info["maturity"], quantity, asset_info["price"], exchange_rate, amount, amount_net, 0]
+            self.portfolio.loc[asset_info["title"]] = [asset_info["isin"], asset_info["currency"], asset_info["maturity"], quantity, asset_info["price"], exchange_rate, amount_, amount, 0]
         else:
             self.portfolio.loc[asset_info["title"], quantity_str] += quantity
             self.portfolio.loc[asset_info["title"], price_str] = asset_info["price"]
             self.portfolio.loc[asset_info["title"], rate_str] = exchange_rate
             self.portfolio.loc[asset_info["title"], amount_str] += amount
-            self.portfolio.loc[asset_info["title"], amount_net_str] += amount_net
+            self.portfolio.loc[asset_info["title"], amount_net_str] += amount_
         self.__update_cash()
         self.__normalise()
-        self.__clean()
         self.__reorder()
+        self.__clean()
         if asset_info["title"] not in self.asset_log:
             self.asset_log[asset_info["title"]] = {"isin": asset_info["isin"], "currency": asset_info["currency"],
                           "cashflow": pd.DataFrame([], columns=[asset_info["title"]])}
         self.asset_log[asset_info["title"]]["cashflow"].loc[pd.to_datetime(asset_info["date"])] = -amount
             
         
-    def sell(self, asset_info, amount, exchange_rate=1):
+    def sell(self, asset_info, quantity, exchange_rate=1):
         if asset_info["title"] not in self.portfolio.index: return
-        if amount > self.portfolio.loc[asset_info["title"], amount_net_str]:
-            amount = self.portfolio.loc[asset_info["title"], amount_net_str]
+        quantity = min(quantity, self.portfolio.loc[asset_info["title"], quantity_str])
+        amount_ = quantity * asset_info["price"]
+        amount = amount_ + asset_info["fee"] + amount_ * asset_info["commission"]
+        if amount < 0.01: return
         self.balance += amount
-        amount_net = amount - asset_info["fee"] - amount * asset_info["commission"]
-        if amount_net < 0.01: return
         record_data_str = sell_str + ": " + asset_info["title"] + " ISIN: " + asset_info["isin"]
         self.current_account.loc[len(self.current_account)] = [pd.to_datetime(asset_info["date"]), sell_str, amount, self.balance, record_data_str]
-        quantity = amount_net / asset_info["price"]
         buysell_enrty = {portfolio_str: self.portfolio_id,
                        bank_str: asset_info["bank"],
                        date_str: pd.to_datetime(asset_info["date"]),
@@ -155,15 +160,15 @@ class Reporting:
         self.portfolio.loc[asset_info["title"], quantity_str] -= quantity
         self.portfolio.loc[asset_info["title"], price_str] = asset_info["price"]
         self.portfolio.loc[asset_info["title"], rate_str] = exchange_rate
-        self.portfolio.loc[asset_info["title"], amount_str] -= amount
-        self.portfolio.loc[asset_info["title"], amount_net_str] -= amount_net
+        self.portfolio.loc[asset_info["title"], amount_str] -= amount_
+        self.portfolio.loc[asset_info["title"], amount_net_str] -= amount_
         self.portfolio.loc[cash_str, quantity_str] = self.balance
         self.portfolio.loc[cash_str, amount_str] = self.balance
         self.portfolio.loc[cash_str, amount_net_str] = self.balance
         self.__update_cash()
         self.__normalise()
-        self.__clean()
         self.__reorder()
+        self.__clean()
         self.asset_log[asset_info["title"]]["cashflow"].loc[pd.to_datetime(asset_info["date"])] = amount
         
     def interest(self, interest_info):
@@ -171,14 +176,24 @@ class Reporting:
         interest_str = "Dividend / Coupon"
         record_data_str = "Title: " + interest_info["isin"] + " " + interest_info["currency"] + " Qty: " + str(interest_info["quantity"]) + " (" + interest_info["title"] + ")"
         self.current_account.loc[len(self.current_account)] = [pd.to_datetime(interest_info["date"]), interest_str, interest_info["amount"], self.balance, record_data_str]
-        self.__normalise()
+        self.__normalise()        
         if interest_info["title"] not in self.asset_log:
+            print ("IF CHECK")
             self.asset_log[interest_info["title"]] = {"isin": interest_info["isin"], "currency": interest_info["currency"],
                           "cashflow": pd.DataFrame([], columns=[interest_info["title"]])}
-        self.asset_log[interest_info["title"]]["cashflow"].loc[pd.to_datetime(interest_info["date"])] = interest_info["amount"]
+        self.asset_log[interest_info["title"]]["cashflow"].loc[pd.to_datetime(interest_info["date"])] = interest_info["amount"]        
         self.__update_cash()
         self.__normalise()
     
+    def __portfolio_total(self):
+        portfolio_total = {amount_str: self.portfolio[amount_str].sum(), 
+                           amount_net_str: self.portfolio[amount_net_str].sum(), 
+                           weight_str: self.portfolio[weight_str].sum()}
+        return portfolio_total
+    
+    def positions(self):
+        return self.portfolio, self.__portfolio_total()
+        
     def returns(self):
         df = pd.DataFrame([], columns=[isin_str, currency_str, coupon_str, pnl_str, irr_str, annualised_return_str], index=self.asset_log.keys())
         resampled_list = []
@@ -190,22 +205,29 @@ class Reporting:
             cashflow = self.asset_log[asset]["cashflow"]
             ii = cashflow.iloc[0, 0]
             ii_list.append(ii)
-            resampled = cashflow.iloc[1:].resample("y").sum()
-            resampled_list.append(resampled)
-            irr = np.irr([ii] + [x[0] for x in resampled.values])
+            if len(cashflow) > 1:
+                resampled = cashflow.iloc[1:].resample("y").sum()
+                resampled_list.append(resampled)
+                irr = np.irr([ii] + [x[0] for x in resampled.values])
+                df.loc[asset, irr_str] = irr
+                df.loc[asset, pnl_str] = cashflow.iloc[:, 0].sum()
+                df.loc[asset, annualised_return_str] = cashflow.iloc[:, 0].sum() / -cashflow.iloc[0, 0] / (cashflow.index[-1] - cashflow.index[0]).days * 252 
+            else:
+                df.loc[asset, irr_str] = 0
+                df.loc[asset, pnl_str] = 0
+                df.loc[asset, annualised_return_str] = 0
             df.loc[asset, coupon_str] = 0
-            df.loc[asset, irr_str] = irr
-            df.loc[asset, pnl_str] = resampled.iloc[-1,0] - ii
-            df.loc[asset, annualised_return_str] = resampled.values.mean() / ii - 1
-        resampled_portfolio = pd.concat(resampled_list, axis=1).sum(axis=1)
-        irr_portfolio = np.irr([np.sum(ii_list)] + [x for x in resampled_portfolio.values])
-        print (irr_portfolio)
-        pnl_portfolio = resampled_portfolio.sum(axis=0) - np.sum(ii_list)
-        print (pnl_portfolio)
-        ar_portfolio = resampled_portfolio.mean(axis=0) / np.sum(ii_list) - 1
-        print (ar_portfolio)
-        return df, resampled_portfolio
-
+        if resampled_list != []:
+            resampled_portfolio = pd.concat(resampled_list, axis=1).sum(axis=1)
+            irr_portfolio = np.irr([np.sum(ii_list)] + [x for x in resampled_portfolio.values])
+            pnl_portfolio = df[pnl_str].sum()
+            ar_portfolio = resampled_portfolio.mean(axis=0) / np.sum(ii_list) - 1
+        df_total = {coupon_str: df[coupon_str].sum(),
+                    pnl_str: pnl_portfolio,
+                    irr_str: irr_portfolio,
+                    annualised_return_str: ar_portfolio}
+        return df, df_total
+ 
 
 if __name__ == "__main__":
     
@@ -222,7 +244,8 @@ if __name__ == "__main__":
                   "nav": 20.4554,
                   "fee": 0,
                   "commission": 0,
-                  "currency": "EUR"}
+                  "currency": "EUR",
+                  "maturity": ""}
     
     asset_info2 = {"date": "2020-06-22",
                   "bank": "Bper",
@@ -232,7 +255,8 @@ if __name__ == "__main__":
                   "nav": 20.4554,
                   "fee": 0,
                   "commission": 0,
-                  "currency": "EUR"}
+                  "currency": "EUR",
+                  "maturity": ""}
     
     asset_info3 = {"date": "2020-01-01",
                   "bank": "Bper",
@@ -242,7 +266,8 @@ if __name__ == "__main__":
                   "nav": 20.4554,
                   "fee": 0,
                   "commission": 0,
-                  "currency": "EUR"}
+                  "currency": "EUR",
+                  "maturity": ""}
     
     interest_info = {"date": "2020-06-20",
                      "isin": "IT0005104473",
@@ -251,18 +276,14 @@ if __name__ == "__main__":
                      "amount": 450,
                      "currency": "EUR"}
     
-    account[name][0].buy(asset_info3, 1000, 1)
+    account[name][0].buy(asset_info3, 10, 1)
     account[name][0].deposit("2020-06-14", 5000)
     account[name][0].deposit("2020-06-14", 5000)
     account[name][0].withdraw("2020-06-17", 5000)
-    account[name][0].buy(asset_info1, 1000, 1)
-    account[name][0].sell(asset_info2, 500, 1)
-    account[name][0].interest(interest_info)
-    
-    print (account[name][0].current_account)
-    
+    account[name][0].buy(asset_info1, 10, 1)
+    account[name][0].sell(asset_info2, 50, 1)
+    account[name][0].interest(interest_info)    
     rets = account[name][0].returns()
-    print (rets[0])
 
     
     
